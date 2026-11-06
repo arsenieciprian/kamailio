@@ -976,7 +976,8 @@ int decode_3gpp_sms(struct sip_msg *msg)
 									&_smsops_rp_data->pdu.originating_address);
 						} else {
 							_smsops_rp_data->pdu.originating_address.s =
-									pkg_malloc(_smsops_rp_data->pdu
+									pkg_malloc(
+											_smsops_rp_data->pdu
 													.originating_address.len);
 							DecodePhoneNumber(&body.s[p],
 									_smsops_rp_data->pdu.originating_address
