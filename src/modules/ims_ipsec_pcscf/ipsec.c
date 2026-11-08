@@ -56,7 +56,40 @@ struct xfrm_buffer
 {
 	char buf[NLMSG_DELETEALL_BUF_SIZE];
 	int offset;
+	int full; /* entries were skipped for lack of room: run another round */
 };
+
+/* room for one more delete message (header and attributes included)? */
+static int delmsg_room(struct xfrm_buffer *b, uint32_t len)
+{
+	if(b->offset + len > sizeof(b->buf)) {
+		b->full = 1;
+		return 0;
+	}
+	return 1;
+}
+
+/* send the collected delete messages, if any */
+static int delmsg_send(
+		struct mnl_socket *mnl_socket, struct xfrm_buffer *b, const char *what)
+{
+	if(b->offset == 0) {
+		return 0;
+	}
+	if(mnl_socket_sendto(mnl_socket, b->buf, b->offset) == -1) {
+		LM_ERR("Error sending delete %s command via netlink socket: %s\n", what,
+				strerror(errno));
+		return 1;
+	}
+	return 0;
+}
+
+#define DELMSG_SA_LEN                                         \
+	(NLMSG_ALIGN(NLMSG_LENGTH(sizeof(struct xfrm_usersa_id))) \
+			+ MNL_ATTR_HDRLEN + MNL_ALIGN(sizeof(xfrm_address_t)))
+#define DELMSG_POLICY_LEN \
+	NLMSG_ALIGN(NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_id)))
+#define DELMSG_MAX_ROUNDS 64
 
 struct del_tunnels
 {
@@ -549,10 +582,9 @@ static int delsa_data_cb(const struct nlmsghdr *nlh, void *data)
 	struct xfrm_buffer *delmsg_buf = (struct xfrm_buffer *)data;
 	uint32_t new_delmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_id));
 
-	if(delmsg_buf->offset + new_delmsg_len
-			> sizeof(delmsg_buf->buf) / sizeof(delmsg_buf->buf[0])) {
-		LM_ERR("Not enough memory allocated for delete SAs netlink command\n");
-		return MNL_CB_ERROR;
+	if(!delmsg_room(delmsg_buf, DELMSG_SA_LEN)) {
+		/* no room left: the next round deletes it */
+		return MNL_CB_OK;
 	}
 
 	struct nlmsghdr *new_delmsg =
@@ -571,7 +603,7 @@ static int delsa_data_cb(const struct nlmsghdr *nlh, void *data)
 	mnl_attr_put(
 			new_delmsg, XFRMA_SRCADDR, sizeof(xsid->daddr), &xsinfo->saddr);
 
-	delmsg_buf->offset += new_delmsg->nlmsg_len;
+	delmsg_buf->offset += NLMSG_ALIGN(new_delmsg->nlmsg_len);
 
 	return MNL_CB_OK;
 }
@@ -588,11 +620,9 @@ static int delpolicy_data_cb(const struct nlmsghdr *nlh, void *data)
 	struct xfrm_buffer *delmsg_buf = (struct xfrm_buffer *)data;
 	uint32_t new_delmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_id));
 
-	if(delmsg_buf->offset + new_delmsg_len
-			> sizeof(delmsg_buf->buf) / sizeof(delmsg_buf->buf[0])) {
-		LM_ERR("Not enough memory allocated for delete policies netlink "
-			   "command\n");
-		return MNL_CB_ERROR;
+	if(!delmsg_room(delmsg_buf, DELMSG_POLICY_LEN)) {
+		/* no room left: the next round deletes it */
+		return MNL_CB_OK;
 	}
 
 	struct nlmsghdr *new_delmsg =
@@ -607,7 +637,7 @@ static int delpolicy_data_cb(const struct nlmsghdr *nlh, void *data)
 	xpid->dir = xpinfo->dir;
 	xpid->index = xpinfo->index;
 
-	delmsg_buf->offset += new_delmsg->nlmsg_len;
+	delmsg_buf->offset += NLMSG_ALIGN(new_delmsg->nlmsg_len);
 
 	return MNL_CB_OK;
 }
@@ -625,6 +655,8 @@ int clean_sa(struct mnl_socket *mnl_socket)
 			.n.nlmsg_seq = time(NULL),
 	};
 
+	int del_round = 0;
+again:
 	if(mnl_socket_sendto(mnl_socket, &req, req.n.nlmsg_len) == -1) {
 		LM_ERR("Error sending get all SAs command via netlink socket: %s\n",
 				strerror(errno));
@@ -637,6 +669,7 @@ int clean_sa(struct mnl_socket *mnl_socket)
 	struct xfrm_buffer delmsg_buf;
 	memset(&delmsg_buf, 0, sizeof(struct xfrm_buffer));
 
+	memset(&delmsg_buf, 0, sizeof(delmsg_buf));
 	int ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	while(ret > 0) {
 		ret = mnl_cb_run(buf, ret, req.n.nlmsg_seq,
@@ -648,12 +681,12 @@ int clean_sa(struct mnl_socket *mnl_socket)
 		ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	}
 
-	// DELETE SAs
-	if(mnl_socket_sendto(mnl_socket, &delmsg_buf.buf, delmsg_buf.offset)
-			== -1) {
-		LM_ERR("Error sending delete SAs command via netlink socket: %s\n",
-				strerror(errno));
+	// DELETE (in rounds: the buffer holds a limited number of messages)
+	if(delmsg_send(mnl_socket, &delmsg_buf, "SAs")) {
 		return 1;
+	}
+	if(delmsg_buf.full && ++del_round < DELMSG_MAX_ROUNDS) {
+		goto again;
 	}
 
 	return 0;
@@ -672,6 +705,8 @@ int clean_policy(struct mnl_socket *mnl_socket)
 			.n.nlmsg_seq = time(NULL),
 	};
 
+	int del_round = 0;
+again:
 	if(mnl_socket_sendto(mnl_socket, &req, req.n.nlmsg_len) == -1) {
 		LM_ERR("Error sending get all policies command via netlink socket: "
 			   "%s\n",
@@ -685,6 +720,7 @@ int clean_policy(struct mnl_socket *mnl_socket)
 	struct xfrm_buffer delmsg_buf;
 	memset(&delmsg_buf, 0, sizeof(struct xfrm_buffer));
 
+	memset(&delmsg_buf, 0, sizeof(delmsg_buf));
 	int ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	while(ret > 0) {
 		ret = mnl_cb_run(buf, ret, req.n.nlmsg_seq,
@@ -697,12 +733,12 @@ int clean_policy(struct mnl_socket *mnl_socket)
 		ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	}
 
-	// DELETE POLICIES
-	if(mnl_socket_sendto(mnl_socket, &delmsg_buf.buf, delmsg_buf.offset)
-			== -1) {
-		LM_ERR("Error sending delete policies command via netlink socket: %s\n",
-				strerror(errno));
+	// DELETE (in rounds: the buffer holds a limited number of messages)
+	if(delmsg_send(mnl_socket, &delmsg_buf, "policies")) {
 		return 1;
+	}
+	if(delmsg_buf.full && ++del_round < DELMSG_MAX_ROUNDS) {
+		goto again;
 	}
 
 	return 0;
@@ -855,10 +891,9 @@ static int delete_unused_sa_cb(const struct nlmsghdr *nlh, void *data)
 	struct xfrm_buffer *delmsg_buf = &((struct del_tunnels *)data)->delmsg_buf;
 	uint32_t new_delmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_id));
 
-	if(delmsg_buf->offset + new_delmsg_len
-			> sizeof(delmsg_buf->buf) / sizeof(delmsg_buf->buf[0])) {
-		LM_ERR("Not enough memory allocated for delete SAs netlink command\n");
-		return MNL_CB_ERROR;
+	if(!delmsg_room(delmsg_buf, DELMSG_SA_LEN)) {
+		/* no room left: the next round deletes it */
+		return MNL_CB_OK;
 	}
 
 	struct nlmsghdr *new_delmsg =
@@ -877,7 +912,7 @@ static int delete_unused_sa_cb(const struct nlmsghdr *nlh, void *data)
 	mnl_attr_put(
 			new_delmsg, XFRMA_SRCADDR, sizeof(xsid->daddr), &xsinfo->saddr);
 
-	delmsg_buf->offset += new_delmsg->nlmsg_len;
+	delmsg_buf->offset += NLMSG_ALIGN(new_delmsg->nlmsg_len);
 
 	// NOTE: Release the Proxy SPIs and Ports only here. Do not release the same SPIs and ports in delete unsused policy callback.
 	// Release SPIs
@@ -898,6 +933,8 @@ static int delete_unused_sa(struct mnl_socket *mnl_socket, void *contacts)
 			.n.nlmsg_seq = time(NULL),
 	};
 
+	int del_round = 0;
+again:
 	if(mnl_socket_sendto(mnl_socket, &req, req.n.nlmsg_len) == -1) {
 		LM_ERR("Error sending get all SAs command via netlink socket: %s\n",
 				strerror(errno));
@@ -911,6 +948,7 @@ static int delete_unused_sa(struct mnl_socket *mnl_socket, void *contacts)
 	del_data.contacts = contacts;
 	memset(&del_data.delmsg_buf, 0, sizeof(del_data.delmsg_buf));
 
+	memset(&del_data.delmsg_buf, 0, sizeof(del_data.delmsg_buf));
 	int ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	while(ret > 0) {
 		ret = mnl_cb_run(buf, ret, req.n.nlmsg_seq,
@@ -923,14 +961,12 @@ static int delete_unused_sa(struct mnl_socket *mnl_socket, void *contacts)
 		ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	}
 
-	// DELETE unused SAs
-	if(mnl_socket_sendto(
-			   mnl_socket, &del_data.delmsg_buf.buf, del_data.delmsg_buf.offset)
-			== -1) {
-		LM_ERR("Error sending delete unused SAs command via netlink socket: "
-			   "%s\n",
-				strerror(errno));
+	// DELETE (in rounds: the buffer holds a limited number of messages)
+	if(delmsg_send(mnl_socket, &del_data.delmsg_buf, "unused SAs")) {
 		return 1;
+	}
+	if(del_data.delmsg_buf.full && ++del_round < DELMSG_MAX_ROUNDS) {
+		goto again;
 	}
 
 	return 0;
@@ -1077,11 +1113,9 @@ static int delete_unused_policy_cb(const struct nlmsghdr *nlh, void *data)
 	struct xfrm_buffer *delmsg_buf = &((struct del_tunnels *)data)->delmsg_buf;
 	uint32_t new_delmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_userpolicy_id));
 
-	if(delmsg_buf->offset + new_delmsg_len
-			> sizeof(delmsg_buf->buf) / sizeof(delmsg_buf->buf[0])) {
-		LM_ERR("Not enough memory allocated for delete policies netlink "
-			   "command\n");
-		return MNL_CB_ERROR;
+	if(!delmsg_room(delmsg_buf, DELMSG_POLICY_LEN)) {
+		/* no room left: the next round deletes it */
+		return MNL_CB_OK;
 	}
 
 	struct nlmsghdr *new_delmsg =
@@ -1096,7 +1130,7 @@ static int delete_unused_policy_cb(const struct nlmsghdr *nlh, void *data)
 	xpid->dir = xpinfo->dir;
 	xpid->index = xpinfo->index;
 
-	delmsg_buf->offset += new_delmsg->nlmsg_len;
+	delmsg_buf->offset += NLMSG_ALIGN(new_delmsg->nlmsg_len);
 
 	return MNL_CB_OK;
 }
@@ -1114,6 +1148,8 @@ static int delete_unused_policy(struct mnl_socket *mnl_socket, void *contacts)
 			.n.nlmsg_seq = time(NULL),
 	};
 
+	int del_round = 0;
+again:
 	if(mnl_socket_sendto(mnl_socket, &req, req.n.nlmsg_len) == -1) {
 		LM_ERR("Error sending get all POLICY command via netlink socket: %s\n",
 				strerror(errno));
@@ -1127,6 +1163,7 @@ static int delete_unused_policy(struct mnl_socket *mnl_socket, void *contacts)
 	del_data.contacts = contacts;
 	memset(&del_data.delmsg_buf, 0, sizeof(del_data.delmsg_buf));
 
+	memset(&del_data.delmsg_buf, 0, sizeof(del_data.delmsg_buf));
 	int ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	while(ret > 0) {
 		ret = mnl_cb_run(buf, ret, req.n.nlmsg_seq,
@@ -1139,14 +1176,12 @@ static int delete_unused_policy(struct mnl_socket *mnl_socket, void *contacts)
 		ret = mnl_socket_recvfrom(mnl_socket, buf, sizeof(buf));
 	}
 
-	// DELETE unused POLICIES
-	if(mnl_socket_sendto(
-			   mnl_socket, &del_data.delmsg_buf.buf, del_data.delmsg_buf.offset)
-			== -1) {
-		LM_ERR("Error sending delete unused policies command via netlink "
-			   "socket: %s\n",
-				strerror(errno));
+	// DELETE (in rounds: the buffer holds a limited number of messages)
+	if(delmsg_send(mnl_socket, &del_data.delmsg_buf, "unused policies")) {
 		return 1;
+	}
+	if(del_data.delmsg_buf.full && ++del_round < DELMSG_MAX_ROUNDS) {
+		goto again;
 	}
 
 	return 0;
