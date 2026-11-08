@@ -836,15 +836,31 @@ static int drop_ipsec_tunnel(
 	return 0;
 }
 
+// Whether pend, the offer in c's security_temp, is another contact's: the
+// copy save_pending() stores from Security-Verify on the contact a REGISTER
+// came from, when the 401 went to another one (a UE on a new client port, or
+// one that registers again from a port it is still registered from). The
+// tunnel belongs to the contact the offer was made to: c must not remove it
+// or release its SPIs - only forget the copy.
+static inline int offer_of_other(pcontact_t *c, ipsec_t *pend)
+{
+	uint16_t owner = spi_get_owner(pend->spi_pc, pend->spi_ps);
+
+	return owner && owner != c->received_port;
+}
+
 // Remove both of a contact's tunnels. Each one removed is cleared from its
 // slot, so the expiry that follows an ipsec_destroy() finds nothing left; one
-// that failed stays for it to retry.
+// that failed stays for it to retry. A copy of another contact's offer is
+// only forgotten.
 static void destroy_contact_tunnels(str remote_addr, pcontact_t *c)
 {
 	ipsec_t *est = contact_tunnel(c->security);
 	ipsec_t *pend = contact_tunnel(c->security_temp);
 
-	if(pend && drop_ipsec_tunnel(remote_addr, pend, est, est) == 0) {
+	if(pend
+			&& (offer_of_other(c, pend)
+					|| drop_ipsec_tunnel(remote_addr, pend, est, est) == 0)) {
 		clear_spi_pair(pend);
 	}
 	if(est && retire_ipsec_tunnel(remote_addr, est, NULL) == 0) {
@@ -1141,6 +1157,17 @@ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
 	est = contact_tunnel(pcontact->security);
 	pend = contact_tunnel(pcontact->security_temp);
 
+	// A copy of another contact's offer (see offer_of_other()): that contact
+	// keeps the tunnel, this 401 makes an offer of its own
+	if(pend && offer_of_other(pcontact, pend)) {
+		LM_DBG("contact [%.*s]: forgetting the copy of the offer made to "
+			   "another contact (spi_pc %u, spi_ps %u)\n",
+				pcontact->aor.len, pcontact->aor.s, pend->spi_pc, pend->spi_ps);
+		clear_spi_pair(pend);
+		pend_retired = 1;
+		pend = NULL;
+	}
+
 	// Get security parameters
 	if(!est
 			&& (pcontact->security_temp == NULL
@@ -1397,6 +1424,54 @@ static pcontact_t *offering_contact(udomain_t *d, pcontact_t *c, ipsec_t *pend)
 	return x;
 }
 
+// The contact other than c holding, in security_temp, the offer a REGISTER
+// came over (rcv): the one made to the contact its P-CSCF server port was
+// handed out for. A UE that registers again from a client port it is still
+// registered from - restarted, keeping its protected ports - answers a 401
+// that went to another of its contacts (the one of its unprotected
+// REGISTER) from the contact it still has, which holds no copy of that
+// offer.
+static pcontact_t *offer_holder(
+		udomain_t *d, pcontact_t *c, struct receive_info *rcv)
+{
+	pcontact_info_t ci;
+	pcontact_t *x;
+	ipsec_t *x_pend;
+	uint32_t spi_pc = 0, spi_ps = 0;
+	uint16_t port;
+	int reverse;
+
+	port = spi_get_owner_by_sport(rcv->dst_port, &spi_pc, &spi_ps);
+	if(!port || port == c->received_port) {
+		return NULL;
+	}
+	// the same UE, so the same slot, as in contact_from_port()
+	memset(&ci, 0, sizeof(pcontact_info_t));
+	ci.aor = c->aor;
+	ci.via_host = c->via_host;
+	ci.via_port = c->via_port;
+	ci.via_prot = c->via_proto;
+	ci.received_host = c->received_host;
+	ci.received_port = port;
+	ci.received_proto = c->received_proto;
+	ci.searchflag = SEARCH_RECEIVED;
+	ci.reg_state = PCONTACT_ANY;
+	for(reverse = 0; reverse <= 1; reverse++) {
+		x = NULL;
+		if(ul.get_pcontact(d, &ci, &x, reverse) != 0 || x == NULL || x == c
+				|| x->received_port != port) {
+			continue;
+		}
+		x_pend = contact_tunnel(x->security_temp);
+		if(x_pend && x_pend->spi_pc == spi_pc && x_pend->spi_ps == spi_ps
+				&& came_over_tunnel(x_pend, rcv)
+				&& !tunnel_deferred(contact_tunnel(x->security), x_pend)) {
+			return x;
+		}
+	}
+	return NULL;
+}
+
 // Delete x, the UE's registration from a client port it has moved off, with
 // the tunnel x is registered over - unless it is est, which the caller
 // removes. Left without a tunnel x would still be found, by a request to the
@@ -1471,13 +1546,32 @@ static int promote_offer(
 	ip_addr_t ue_addr;
 	uint16_t port;
 
-	// a deferred offer is not installed, so cannot have been registered over
-	if(!pend || tunnel_deferred(est, pend) || !rcv) {
+	if(!rcv || str2ipxbuf(&c->received_host, &ue_addr) < 0
+			|| !ip_addr_cmp(&ue_addr, &rcv->src_ip)) {
 		return 0;
 	}
-	if(!came_over_tunnel(pend, rcv)
-			|| str2ipxbuf(&c->received_host, &ue_addr) < 0
-			|| !ip_addr_cmp(&ue_addr, &rcv->src_ip)) {
+	// Not over c's own offer (a deferred one is not installed, so cannot
+	// have been registered over), nor over its registered tunnel: over an
+	// offer another contact holds, see offer_holder(). c's own offer is
+	// superseded by it.
+	if((!pend || tunnel_deferred(est, pend) || !came_over_tunnel(pend, rcv))
+			&& !(est && came_over_tunnel(est, rcv))
+			&& (x = offer_holder(d, c, rcv)) != NULL) {
+		if(pend && drop_ipsec_tunnel(c->received_host, pend, est, NULL) != 0) {
+			return 0;
+		}
+		take_over_offer(d, c, x);
+		pend = contact_tunnel(c->security_temp);
+		if(registered) {
+			drop_superseded_contact(d, x, est, pend);
+		}
+		goto promote;
+	}
+	// a deferred offer is not installed, so cannot have been registered over
+	if(!pend || tunnel_deferred(est, pend)) {
+		return 0;
+	}
+	if(!came_over_tunnel(pend, rcv)) {
 		LM_DBG("contact [%.*s]: REGISTER from port %u to %u did not come over "
 			   "the offered tunnel (%u to %u)\n",
 				c->aor.len, c->aor.s, rcv->src_port, rcv->dst_port,
@@ -1492,6 +1586,7 @@ static int promote_offer(
 			drop_superseded_contact(d, x, est, pend);
 		}
 	}
+promote:
 	if(registered) {
 		// the contact a 401 to c took est over from, kept until now
 		if(est && (port = spi_get_owner(est->spi_pc, est->spi_ps)) != 0

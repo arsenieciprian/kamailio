@@ -299,6 +299,39 @@ uint16_t spi_get_owner(uint32_t spi_cid, uint32_t spi_sid)
 	return owner;
 }
 
+// The owner of the SPI pair handed out with P-CSCF server port sport, and the
+// pair, or 0 if no pair in use has that port
+uint16_t spi_get_owner_by_sport(
+		uint16_t sport, uint32_t *spi_cid, uint32_t *spi_sid)
+{
+	spi_node_t *n;
+	uint16_t owner = 0;
+	int i;
+
+	if(!spi_data || !sport) {
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&spi_data->spis_mut) != 0) {
+		return 0;
+	}
+
+	for(i = 0; i < MAX_HASH_SPI && !owner; i++) {
+		for(n = spi_data->used_spis[i].head; n; n = n->next) {
+			if(n->sport == sport && n->owner) {
+				owner = n->owner;
+				*spi_cid = n->spi_cid;
+				*spi_sid = n->spi_sid;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&spi_data->spis_mut);
+
+	return owner;
+}
+
 int clean_spi_list()
 {
 	uint32_t j;
