@@ -55,6 +55,7 @@
 #include "../../lib/srdb1/db.h"
 #include "../../core/socket_info.h"
 #include "../../core/ut.h"
+#include "../../core/trim.h"
 #include "ims_usrloc_pcscf_mod.h" /* usrloc module parameters */
 #include "usrloc.h"
 #include "utime.h"
@@ -390,12 +391,34 @@ int update_pcontact(struct udomain *_d, struct pcontact_info *_ci,
 	if(_ci->num_public_ids > 0 && _ci->public_ids) {
 		if(_c->head) {
 			LM_DBG("ppublic's already exist.... .not updating\n");
+			// only their display names, which the HSS may have changed
+			// (3GPP TS 24.229 5.4.1.2.2F)
+			if(_ci->public_ids_display) {
+				for(ppublic_ptr = _c->head; ppublic_ptr;
+						ppublic_ptr = ppublic_ptr->next) {
+					for(i = 0; i < _ci->num_public_ids; i++) {
+						if(ppublic_ptr->public_identity.len
+										== _ci->public_ids[i].len
+								&& memcmp(ppublic_ptr->public_identity.s,
+										   _ci->public_ids[i].s,
+										   _ci->public_ids[i].len)
+										   == 0) {
+							set_ppublic_display_name(
+									ppublic_ptr, &_ci->public_ids_display[i]);
+							break;
+						}
+					}
+				}
+			}
 		} else {
 			for(i = 0; i < _ci->num_public_ids; i++) {
 				if(i > 0)
 					is_default =
 							0; //only the first one is default - P-Associated-uri (first one is default)
-				if(new_ppublic(&_ci->public_ids[i], is_default, &ppublic_ptr)
+				if(new_ppublic(&_ci->public_ids[i],
+						   _ci->public_ids_display ? &_ci->public_ids_display[i]
+												   : 0,
+						   is_default, &ppublic_ptr)
 						!= 0) {
 					LM_ERR("unable to create new ppublic\n");
 				} else {
@@ -947,8 +970,8 @@ static inline pcontact_info_t *dbrow2info(db_val_t *vals, str *contact)
 	static str host, received, path, rx_session_id, implicit_impus, tmpstr,
 			service_routes;
 	static str *impu_list, *service_route_list;
-	int flag = 0, n;
-	char *p, *q = 0;
+	int flag = 0, n, ci_n_dn;
+	char *p, *q = 0, *dn;
 
 	memset(&ci, 0, sizeof(pcontact_info_t));
 
@@ -1015,14 +1038,33 @@ static inline pcontact_info_t *dbrow2info(db_val_t *vals, str *contact)
 			}
 			p++;
 		}
-		impu_list = pkg_malloc(sizeof(str) * n);
+		// the display names follow the identities in the same block, so
+		// whoever frees public_ids frees them too
+		ci_n_dn = n;
+		impu_list = pkg_malloc(sizeof(str) * n * 2);
+		if(!impu_list) {
+			PKG_MEM_ERROR;
+			n = 0;
+		} else {
+			memset(impu_list, 0, sizeof(str) * n * 2);
+		}
 
+		// <impu1>"display name 2"<impu2>...: a display name, if any, is
+		// what stands between the previous '>' and the '<' (see
+		// impus_as_string())
 		n = 0;
 		p = implicit_impus.s;
-		while(*p) {
+		dn = p;
+		while(impu_list && *p) {
 			if(*p == '<') {
 				q = p + 1;
 				flag = 1;
+				impu_list[ci_n_dn + n].s = dn;
+				impu_list[ci_n_dn + n].len = p - dn;
+				trim(&impu_list[ci_n_dn + n]);
+				if(impu_list[ci_n_dn + n].len == 0) {
+					impu_list[ci_n_dn + n].s = 0;
+				}
 			}
 			if(*p == '>') {
 				if(flag) {
@@ -1031,11 +1073,13 @@ static inline pcontact_info_t *dbrow2info(db_val_t *vals, str *contact)
 					impu_list[n++] = tmpstr;
 				}
 				flag = 0;
+				dn = p + 1;
 			}
 			p++;
 		}
 		ci.num_public_ids = n;
 		ci.public_ids = impu_list;
+		ci.public_ids_display = impu_list ? impu_list + ci_n_dn : 0;
 	}
 
 	//service routes

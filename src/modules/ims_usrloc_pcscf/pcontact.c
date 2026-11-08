@@ -79,14 +79,15 @@ void insert_ppublic(struct pcontact *_c, ppublic_t *_p)
 		_c->tail = _p;
 	}
 }
-int new_ppublic(str *public_identity, int is_default, ppublic_t **_p)
+int new_ppublic(
+		str *public_identity, str *display_name, int is_default, ppublic_t **_p)
 {
 	*_p = (ppublic_t *)shm_malloc(sizeof(ppublic_t));
 	if(!*_p) {
 		LM_ERR("no more shm memory\n");
 		return -1;
 	}
-	(*_p)->next = (*_p)->prev = 0;
+	memset(*_p, 0, sizeof(ppublic_t));
 	(*_p)->public_identity.s = (char *)shm_malloc(public_identity->len);
 	if(!(*_p)->public_identity.s) {
 		LM_ERR("no more shm memory\n");
@@ -99,6 +100,39 @@ int new_ppublic(str *public_identity, int is_default, ppublic_t **_p)
 	(*_p)->is_default = is_default;
 	memcpy((*_p)->public_identity.s, public_identity->s, public_identity->len);
 	(*_p)->public_identity.len = public_identity->len;
+	if(set_ppublic_display_name(*_p, display_name) != 0) {
+		free_ppublic(*_p);
+		*_p = 0;
+		return -1;
+	}
+	return 0;
+}
+
+/* Set the display name of a public identity (none if display_name is 0 or
+ * empty), replacing the one it had */
+int set_ppublic_display_name(ppublic_t *_p, str *display_name)
+{
+	char *s = 0;
+
+	if(display_name && display_name->len > 0) {
+		if(_p->display_name.len == display_name->len
+				&& memcmp(_p->display_name.s, display_name->s,
+						   display_name->len)
+						   == 0) {
+			return 0;
+		}
+		s = (char *)shm_malloc(display_name->len);
+		if(!s) {
+			SHM_MEM_ERROR;
+			return -1;
+		}
+		memcpy(s, display_name->s, display_name->len);
+	}
+	if(_p->display_name.s) {
+		shm_free(_p->display_name.s);
+	}
+	_p->display_name.s = s;
+	_p->display_name.len = s ? display_name->len : 0;
 	return 0;
 }
 
@@ -108,6 +142,9 @@ void free_ppublic(ppublic_t *_p)
 		return;
 	if(_p->public_identity.s) {
 		shm_free(_p->public_identity.s);
+	}
+	if(_p->display_name.s) {
+		shm_free(_p->display_name.s);
 	}
 	shm_free(_p);
 }
@@ -262,7 +299,10 @@ int new_pcontact(struct udomain *_d, str *_contact, struct pcontact_info *_ci,
 		if(i > 0)
 			is_default =
 					0; //only the first one is default - P-Associated-uri (first one is default)
-		if(new_ppublic(&_ci->public_ids[i], is_default, &ppublic_ptr) != 0) {
+		if(new_ppublic(&_ci->public_ids[i],
+				   _ci->public_ids_display ? &_ci->public_ids_display[i] : 0,
+				   is_default, &ppublic_ptr)
+				!= 0) {
 			LM_ERR("unable to create new ppublic\n");
 		} else {
 			insert_ppublic(*_c, ppublic_ptr);

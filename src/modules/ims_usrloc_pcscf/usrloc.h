@@ -155,7 +155,8 @@ typedef struct udomain_head
 typedef struct ppublic
 {
 	str public_identity; /**< Public identity */
-	char is_default;	 /**< is this the default identity for the contact */
+	str display_name; /**< its display-name in P-Associated-URI, as received */
+	char is_default;  /**< is this the default identity for the contact */
 	struct ppublic *next;
 	struct ppublic *prev;
 } ppublic_t;
@@ -209,6 +210,7 @@ typedef struct pcontact_info
 	time_t expires;
 	str *callid;
 	str *public_ids;
+	str *public_ids_display; /**< display names, parallel to public_ids, or 0 */
 	int num_public_ids;
 	str *service_routes;
 	int num_service_routes;

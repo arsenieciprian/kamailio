@@ -59,7 +59,9 @@ struct hslot; /*!< Hash table slot */
 
 
 void insert_ppublic(struct pcontact *_c, ppublic_t *_p);
-int new_ppublic(str *public_identity, int is_default, ppublic_t **_p);
+int new_ppublic(str *public_identity, str *display_name, int is_default,
+		ppublic_t **_p);
+int set_ppublic_display_name(ppublic_t *_p, str *display_name);
 void free_ppublic(ppublic_t *_p);
 
 int new_pcontact(struct udomain *_d, str *_contact, struct pcontact_info *_ci,

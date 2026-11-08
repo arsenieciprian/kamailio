@@ -607,6 +607,14 @@ int db_update_pcontact_security(
  * returns the length of the string (list)
  * the string list itself will be available in p
  */
+/* A display name that can be stored before <impu>: one with no '<' or '>',
+ * which would break the list for this code and for older versions */
+static inline int storable_display_name(str *dn)
+{
+	return dn->len > 0 && !memchr(dn->s, '<', dn->len)
+		   && !memchr(dn->s, '>', dn->len);
+}
+
 int impus_as_string(struct pcontact *_c, t_reusable_buffer *buffer)
 {
 	ppublic_t *impu;
@@ -616,6 +624,8 @@ int impus_as_string(struct pcontact *_c, t_reusable_buffer *buffer)
 	impu = _c->head;
 	while(impu) {
 		len += 2 + impu->public_identity.len;
+		if(storable_display_name(&impu->display_name))
+			len += impu->display_name.len;
 		impu = impu->next;
 	}
 
@@ -634,6 +644,11 @@ int impus_as_string(struct pcontact *_c, t_reusable_buffer *buffer)
 	impu = _c->head;
 	p = buffer->buf;
 	while(impu) {
+		// "display name"<impu>: older versions read only what is in <>
+		if(storable_display_name(&impu->display_name)) {
+			memcpy(p, impu->display_name.s, impu->display_name.len);
+			p += impu->display_name.len;
+		}
 		*p++ = '<';
 		memcpy(p, impu->public_identity.s, impu->public_identity.len);
 		p += impu->public_identity.len;
