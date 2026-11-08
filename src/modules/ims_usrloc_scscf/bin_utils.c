@@ -967,9 +967,12 @@ error:
  * @param s - the ims subscription to encode
  * @returns 1 on success or 0 on error
  */
+/* marks the display names appended after the service profiles */
+#define BIN_DISPLAY_NAMES 'N'
+
 int bin_encode_ims_subscription(bin_data *x, ims_subscription *s)
 {
-	int i;
+	int i, j, names = 0;
 	if(!bin_encode_str(x, &(s->private_identity)))
 		goto error;
 	if(!bin_encode_ushort(x, s->service_profiles_cnt))
@@ -978,6 +981,28 @@ int bin_encode_ims_subscription(bin_data *x, ims_subscription *s)
 	for(i = 0; i < s->service_profiles_cnt; i++)
 		if(!bin_encode_service_profile(x, s->service_profiles + i))
 			goto error;
+
+	// The display names of the public identities (DisplayName, 3GPP TS
+	// 29.228), only if there is one: after everything else, so that data
+	// stored without them decodes as before, and older code that reads data
+	// with them ignores them. A mark, then one string per public identity,
+	// in order.
+	for(i = 0; i < s->service_profiles_cnt && !names; i++)
+		for(j = 0; j < s->service_profiles[i].public_identities_cnt; j++)
+			if(s->service_profiles[i].public_identities[j].display_name.len) {
+				names = 1;
+				break;
+			}
+	if(names) {
+		if(!bin_encode_char(x, BIN_DISPLAY_NAMES))
+			goto error;
+		for(i = 0; i < s->service_profiles_cnt; i++)
+			for(j = 0; j < s->service_profiles[i].public_identities_cnt; j++)
+				if(!bin_encode_str(x, &(s->service_profiles[i]
+													  .public_identities[j]
+													  .display_name)))
+					goto error;
+	}
 
 	return 1;
 error:
@@ -1024,6 +1049,35 @@ ims_subscription *bin_decode_ims_subscription(bin_data *x)
 	for(i = 0; i < imss->service_profiles_cnt; i++)
 		if(!bin_decode_service_profile(x, imss->service_profiles + i))
 			goto error;
+
+	// display names, if appended (see bin_encode_ims_subscription()); a
+	// damaged set is dropped, not the subscription
+	if(x->max < x->len) {
+		char mark = 0;
+		int j, ok = bin_decode_char(x, &mark) && mark == BIN_DISPLAY_NAMES;
+		ims_public_identity *pi;
+		for(i = 0; ok && i < imss->service_profiles_cnt; i++)
+			for(j = 0;
+					ok && j < imss->service_profiles[i].public_identities_cnt;
+					j++) {
+				pi = &imss->service_profiles[i].public_identities[j];
+				ok = bin_decode_str(x, &s)
+					 && (!s.len || str_shm_dup(&pi->display_name, &s));
+			}
+		if(!ok) {
+			LM_WARN("display names of [%.*s] not decoded, dropped\n",
+					imss->private_identity.len, imss->private_identity.s);
+			for(i = 0; i < imss->service_profiles_cnt; i++)
+				for(j = 0; j < imss->service_profiles[i].public_identities_cnt;
+						j++) {
+					pi = &imss->service_profiles[i].public_identities[j];
+					if(pi->display_name.s)
+						shm_free(pi->display_name.s);
+					pi->display_name.s = NULL;
+					pi->display_name.len = 0;
+				}
+		}
+	}
 
 	imss->lock = lock_alloc();
 	if(imss->lock == 0) {

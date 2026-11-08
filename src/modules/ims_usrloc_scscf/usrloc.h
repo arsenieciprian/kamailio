@@ -234,6 +234,7 @@ typedef struct
 	char barring;		 /**< Barring state									*/
 	str public_identity; /**< Public Identity string							*/
 	str wildcarded_psi;	 /** if exists is the wildcarded psi					*/
+	str display_name; /**< DisplayName from the HSS (3GPP TS 29.228), if any */
 } ims_public_identity;
 
 /** Initial Filter Criteria Structure */

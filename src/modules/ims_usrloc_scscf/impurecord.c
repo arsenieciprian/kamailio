@@ -917,6 +917,10 @@ void free_ims_subscription_data(ims_subscription *s)
 				shm_free(s->service_profiles[i]
 								 .public_identities[j]
 								 .wildcarded_psi.s);
+			if(s->service_profiles[i].public_identities[j].display_name.s)
+				shm_free(s->service_profiles[i]
+								 .public_identities[j]
+								 .display_name.s);
 		}
 		if(s->service_profiles[i].public_identities)
 			shm_free(s->service_profiles[i].public_identities);
