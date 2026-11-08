@@ -1486,7 +1486,12 @@ int pv_sms_body(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 				buffer_size - _smsops_sms_body.len, &actual_text_size,
 				paddingBits);
 		_smsops_sms_body.len += i;
-		_smsops_sms_body.s[smstext_len_pos] = actual_text_size + udh_len;
+		// TP-UDL counts septets for GSM 7 bit (TS 23.040 9.2.3.16): the UDH
+		// with its fill bits takes (udh_len * 8 + 6) / 7 of them (7 for the
+		// 6 octets of a concatenation UDH), not udh_len - one short, the
+		// receiver lost the last character of every part
+		_smsops_sms_body.s[smstext_len_pos] =
+				actual_text_size + (udh_len * 8 + 6) / 7;
 	} else {
 		// Coding: ucs2
 		int ucs2len = utf8_to_ucs2(&_smsops_rp_send_data->pdu.payload.sm.s[0],
