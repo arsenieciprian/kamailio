@@ -94,10 +94,9 @@ char *impu_contact_insert_query =
 		"FROM impu I, contact C WHERE I.impu='%.*s' and C.contact='%.*s')";
 int impu_contact_insert_query_len;
 char *impu_contact_delete_query =
-		"DELETE impu_contact FROM impu_contact INNER JOIN impu ON "
-		"impu_contact.impu_id = impu.id INNER JOIN contact ON contact.id = "
-		"impu_contact.contact_id where impu.impu = '%.*s' and contact.contact "
-		"= '%.*s'";
+		"DELETE FROM impu_contact WHERE impu_id IN (SELECT id FROM impu WHERE "
+		"impu = '%.*s') AND contact_id IN (SELECT id FROM contact WHERE "
+		"contact = '%.*s')";
 int impu_contact_delete_query_len;
 
 char *impu_subscriber_insert_query =
@@ -107,12 +106,10 @@ char *impu_subscriber_insert_query =
 		"S.presentity_uri='%.*s')";
 int impu_subscriber_insert_query_len;
 char *impu_subscriber_delete_query =
-		"DELETE impu_subscriber FROM impu_subscriber INNER JOIN impu on "
-		"impu_subscriber.impu_id=impu.id INNER JOIN subscriber_scscf on "
-		"impu_subscriber.subscriber_id=subscriber_scscf.id WHERE "
-		"impu.impu='%.*s' AND subscriber_scscf.event='%.*s' and "
-		"subscriber_scscf.watcher_contact='%.*s' and "
-		"subscriber_scscf.presentity_uri='%.*s'";
+		"DELETE FROM impu_subscriber WHERE impu_id IN (SELECT id FROM impu "
+		"WHERE impu='%.*s') AND subscriber_id IN (SELECT id FROM "
+		"subscriber_scscf WHERE event='%.*s' AND watcher_contact='%.*s' AND "
+		"presentity_uri='%.*s')";
 int impu_subscriber_delete_query_len;
 
 char *delete_unlinked_contact_query = "DELETE from contact";
@@ -1002,15 +999,18 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 			p_contact = query_buffer.s + query_contact.len;
 			snprintf(p_contact, impu_id_len + 1, "%d", impu_id);
 			query_buffer.len = query_contact.len + impu_id_len;
+			contact_rs = NULL;
 			if(ul_dbf.raw_query(_c, &query_buffer, &contact_rs) != 0) {
 				LM_ERR("Unable to query DB for contacts associated with impu "
 					   "[%.*s]\n",
 						impu.len, impu.s);
-				ul_dbf.free_result(_c, contact_rs);
+				if(contact_rs)
+					ul_dbf.free_result(_c, contact_rs);
 			} else {
 				if(RES_ROW_N(contact_rs) == 0) {
 					LM_DBG("no contacts associated with impu [%.*s]\n",
 							impu.len, impu.s);
+					if(contact_rs)
 					ul_dbf.free_result(_c, contact_rs);
 				} else {
 					nn = 0;
@@ -1067,7 +1067,8 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 									   _c, &contact_rs, ul_fetch_rows)
 									< 0) {
 								LM_ERR("fetching rows failed\n");
-								ul_dbf.free_result(_c, contact_rs);
+								if(contact_rs)
+					ul_dbf.free_result(_c, contact_rs);
 								unlock_udomain(_d, &impu);
 								return -1;
 							}
@@ -1075,6 +1076,7 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 							break;
 						}
 					} while(RES_ROW_N(contact_rs) > 0);
+					if(contact_rs)
 					ul_dbf.free_result(_c, contact_rs);
 				}
 			}
@@ -1099,11 +1101,13 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 			p_subscriber = query_buffer.s + query_subscriber.len;
 			snprintf(p_subscriber, impu_id_len + 1, "%d", impu_id);
 			query_buffer.len = query_subscriber.len + impu_id_len;
+			subscriber_rs = NULL;
 			if(ul_dbf.raw_query(_c, &query_buffer, &subscriber_rs) != 0) {
 				LM_ERR("Unable to query DB for subscriber associated with impu "
 					   "[%.*s]\n",
 						impu.len, impu.s);
-				ul_dbf.free_result(_c, subscriber_rs);
+				if(subscriber_rs)
+					ul_dbf.free_result(_c, subscriber_rs);
 				unlock_udomain(_d, &impu);
 				unref_subscription(subscription);
 				continue;
@@ -1111,7 +1115,8 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 			if(RES_ROW_N(subscriber_rs) == 0) {
 				LM_DBG("no subscriber associated with impu [%.*s]\n", impu.len,
 						impu.s);
-				ul_dbf.free_result(_c, subscriber_rs);
+				if(subscriber_rs)
+					ul_dbf.free_result(_c, subscriber_rs);
 				unlock_udomain(_d, &impu);
 				unref_subscription(subscription);
 				continue;
@@ -1152,7 +1157,8 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 					if(ul_dbf.fetch_result(_c, &subscriber_rs, ul_fetch_rows)
 							< 0) {
 						LM_ERR("fetching rows failed\n");
-						ul_dbf.free_result(_c, subscriber_rs);
+						if(subscriber_rs)
+					ul_dbf.free_result(_c, subscriber_rs);
 						unlock_udomain(_d, &impu);
 						return -1;
 					}
@@ -1160,7 +1166,8 @@ int preload_udomain(db1_con_t *_c, udomain_t *_d)
 					break;
 				}
 			} while(RES_ROW_N(subscriber_rs) > 0);
-			ul_dbf.free_result(_c, subscriber_rs);
+			if(subscriber_rs)
+					ul_dbf.free_result(_c, subscriber_rs);
 
 			unlock_udomain(_d, &impu);
 			if(must_unref_subscription)
