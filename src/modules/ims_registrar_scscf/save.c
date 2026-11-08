@@ -1164,7 +1164,10 @@ static int update_contacts_sar_re_registration(struct sip_msg *msg,
 	//build the contact buffer for the exact registered contact for reply on explicit IMPU
 	build_contact(impu_rec, contact_header,
 			skip_multiple_bindings_on_reg_resp == 1 ? msg : 0);
-	build_p_associated_uri(impu_rec->s);
+	// the implicit set the HSS has just sent (3GPP TS 24.229 5.4.1.2.2F),
+	// not the one of the subscription stored so far, which the IMPUs move
+	// to only below; the stored one if the SAA carried no user data
+	build_p_associated_uri((s && *s) ? *s : impu_rec->s);
 
 	subscription = impu_rec->s;
 	if(!subscription) {
