@@ -408,6 +408,16 @@ int cscf_get_p_associated_uri(
 		struct sip_msg *msg, str **public_id, int *public_id_cnt, int is_shm);
 
 /**
+ * As cscf_get_p_associated_uri(), and the display name of each entry.
+ * @param display_name - filled with an array of display names, parallel to
+ * public_id: the display-name token as received (a quoted-string keeps its
+ * quotes), len 0 if the entry has none; pkg, freed by the caller
+ * @returns 1 on success or 0 on error
+ */
+int cscf_get_p_associated_uri_names(struct sip_msg *msg, str **public_id,
+		str **display_name, int *public_id_cnt, int is_shm);
+
+/**
  * Looks for the realm parameter in the Authorization header and returns its value.
  * @param msg - the SIP message
  * @returns the realm

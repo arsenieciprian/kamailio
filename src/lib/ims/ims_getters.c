@@ -51,6 +51,7 @@
 #include "../../core/parser/parse_uri.h"
 #include "../../core/parser/parse_rr.h"
 #include "../../core/parser/parse_nameaddr.h"
+#include "../../core/trim.h"
 #include "../../core/data_lump.h"
 #include "../../core/data_lump_rpl.h"
 #include "../../core/parser/parse_from.h"
@@ -1509,10 +1510,19 @@ str cscf_get_event(struct sip_msg *msg)
 int cscf_get_p_associated_uri(
 		struct sip_msg *msg, str **public_id, int *public_id_cnt, int is_shm)
 {
+	return cscf_get_p_associated_uri_names(
+			msg, public_id, NULL, public_id_cnt, is_shm);
+}
+
+int cscf_get_p_associated_uri_names(struct sip_msg *msg, str **public_id,
+		str **display_name, int *public_id_cnt, int is_shm)
+{
 	struct hdr_field *h;
 	rr_t *r, *r2;
 	*public_id = 0;
 	*public_id_cnt = 0;
+	if(display_name)
+		*display_name = 0;
 
 	if(!msg)
 		return 0;
@@ -1547,12 +1557,30 @@ int cscf_get_p_associated_uri(
 	*public_id = pkg_malloc(sizeof(str) * (*public_id_cnt));
 	if(*public_id == NULL) {
 		PKG_MEM_ERROR;
+		*public_id_cnt = 0;
 		return 0;
+	}
+	if(display_name) {
+		*display_name = pkg_malloc(sizeof(str) * (*public_id_cnt));
+		if(*display_name == NULL) {
+			PKG_MEM_ERROR;
+			pkg_free(*public_id);
+			*public_id = 0;
+			*public_id_cnt = 0;
+			return 0;
+		}
 	}
 	r2 = r;
 	*public_id_cnt = 0;
 	while(r2) {
 		(*public_id)[(*public_id_cnt)] = r2->nameaddr.uri;
+		if(display_name) {
+			// the display name the S-CSCF put for this identity (3GPP TS
+			// 24.229 5.4.1.2.2F), as received; it points into the message
+			// buffer like the URI
+			(*display_name)[(*public_id_cnt)] = r2->nameaddr.name;
+			trim(&(*display_name)[(*public_id_cnt)]);
+		}
 		(*public_id_cnt) = (*public_id_cnt) + 1;
 		r2 = r2->next;
 	}
