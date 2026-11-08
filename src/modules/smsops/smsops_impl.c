@@ -398,11 +398,16 @@ static int ascii_to_gsm(str sms, char *output_buffer, int buffer_size,
 }
 
 // Decode 7bit encoded message by splitting 8 bit encoded buffer into 7 bit ASCII characters.
-int gsm_to_ascii(char *buffer, int buffer_length, str sms, const int fill_bits)
+int gsm_to_ascii(char *sbuffer, int buffer_length, str sms, const int fill_bits)
 {
+	// the octets as unsigned: shifting a negative char is undefined (<<) or
+	// sign-extends (>>) into the bits of the septet
+	const unsigned char *buffer = (const unsigned char *)sbuffer;
 	int output_text_length = 0;
 
-	if(!buffer_length || (fill_bits && buffer_length < 2))
+	// with one fill bit the first septet fits in the first octet: the last
+	// part of a concatenated message can be a single character
+	if(!buffer_length || (fill_bits > 1 && buffer_length < 2))
 		return 0;
 
 	// How many bits we have carried from the next octet. This number can be positive or negative:
@@ -428,9 +433,10 @@ int gsm_to_ascii(char *buffer, int buffer_length, str sms, const int fill_bits)
 		symbol =
 				((buffer[0] >> fill_bits)
 						| // remove the fill bits from the first octet
-						(buffer[1]
-								& cmask << (8
-											- fill_bits)) // mask the required number of bits
+						(buffer_length > 1 ? buffer[1]
+										   & cmask << (8
+													   - fill_bits)
+										   : 0) // mask the required number of bits
 						//and shift them accordingly
 						)
 				& BITMASK_7BITS; // mask just 7 bits from the first octet
@@ -535,7 +541,13 @@ int gsm_to_ascii(char *buffer, int buffer_length, str sms, const int fill_bits)
 	}
 
 	if(num_bytes < sms.len) { // Add last remainder.
-		symbol = ((unsigned char)buffer[i - 1] >> (8 - carry_on_bits))
+		// After the loop carry_on_bits is -7 when the last septet is the
+		// top 7 bits of the last octet (8 septets in 7 octets): shift it
+		// down by 8 + carry_on_bits, not 8 - carry_on_bits, which shifted
+		// the whole octet out and turned the last character into '@'.
+		symbol = (buffer[i - 1]
+						 >> (carry_on_bits < 0 ? 8 + carry_on_bits
+											   : 8 - carry_on_bits))
 				 & BITMASK_7BITS;
 
 		output_text_length += gsm7_septet_utf8(
