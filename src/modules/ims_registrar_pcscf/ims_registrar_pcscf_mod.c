@@ -146,6 +146,8 @@ static int assert_identity_fixup(void **param, int param_no);
 /* Pseudo-Variables */
 static int pv_get_asserted_identity_f(
 		struct sip_msg *, pv_param_t *, pv_value_t *);
+static int pv_get_asserted_display_name_f(
+		struct sip_msg *, pv_param_t *, pv_value_t *);
 static int pv_get_registration_contact_f(
 		struct sip_msg *, pv_param_t *, pv_value_t *);
 static int unregister_fixup(void **param, int param_no);
@@ -200,6 +202,9 @@ static param_export_t params[] = {{"pcscf_uri", PARAM_STR, &pcscf_uri},
 static pv_export_t mod_pvs[] = {
 	{{"pcscf_asserted_identity", (sizeof("pcscf_asserted_identity") - 1)}, /* The first identity of the contact. */
 			PVT_OTHER, pv_get_asserted_identity_f, 0, 0, 0, 0, 0},
+	{{"pcscf_asserted_display_name",
+			 (sizeof("pcscf_asserted_display_name") - 1)}, /* Its display name. */
+			PVT_OTHER, pv_get_asserted_display_name_f, 0, 0, 0, 0, 0},
 	{{"pcscf_registration_contact", (sizeof("pcscf_registration_contact") - 1)}, /* The contact used during REGISTER */
 			PVT_OTHER, pv_get_registration_contact_f, 0, 0, 0, 0, 0},
 	{{0, 0}, 0, 0, 0, 0, 0, 0, 0}
@@ -506,6 +511,18 @@ static int pv_get_asserted_identity_f(
 		return pv_get_strval(msg, param, res, ret_val);
 	else
 		return -1;
+}
+
+/*
+ * Get the display name of the asserted identity ($null if none)
+ */
+static int pv_get_asserted_display_name_f(
+		struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
+{
+	str *ret_val = get_asserted_display_name(msg);
+	if(ret_val != NULL && ret_val->len > 0)
+		return pv_get_strval(msg, param, res, ret_val);
+	return pv_get_null(msg, param, res);
 }
 
 

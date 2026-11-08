@@ -122,8 +122,8 @@ static inline int calc_contact_expires(
  */
 static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 		udomain_t *_d, unsigned char is_star, int expires_hdr, str *public_id,
-		int public_id_cnt, str *service_route, int service_route_cnt,
-		int requires_nat)
+		str *public_id_display, int public_id_cnt, str *service_route,
+		int service_route_cnt, int requires_nat)
 {
 	int local_time_now, expires = 0;
 	struct hdr_field *h;
@@ -161,6 +161,7 @@ static inline int update_contacts(struct sip_msg *req, struct sip_msg *rpl,
 				ci.aor = c->uri;
 				ci.expires = expires;
 				ci.public_ids = public_id;
+				ci.public_ids_display = public_id_display;
 				ci.num_public_ids = public_id_cnt;
 				ci.service_routes = service_route;
 				ci.num_service_routes = service_route_cnt;
@@ -590,6 +591,7 @@ int save(struct sip_msg *_m, udomain_t *_d, int _cflags)
 	int expires_hdr = 0;
 	contact_body_t *cb = 0;
 	str *public_ids = 0;
+	str *public_ids_display = 0;
 	int num_public_ids = 0;
 	str *service_routes = 0;
 	int num_service_routes = 0;
@@ -637,12 +639,14 @@ int save(struct sip_msg *_m, udomain_t *_d, int _cflags)
 		}
 	}
 
-	cscf_get_p_associated_uri(_m, &public_ids, &num_public_ids, 1);
+	cscf_get_p_associated_uri_names(
+			_m, &public_ids, &public_ids_display, &num_public_ids, 1);
 	service_routes = cscf_get_service_route(_m, &num_service_routes, 1);
 
 	//update contacts
 	if(!update_contacts(req, _m, _d, cb->star, expires_hdr, public_ids,
-			   num_public_ids, service_routes, num_service_routes, 0)) {
+			   public_ids_display, num_public_ids, service_routes,
+			   num_service_routes, 0)) {
 		LM_ERR("failed to update pcontact\n");
 		goto error;
 	}
@@ -706,6 +710,8 @@ int save(struct sip_msg *_m, udomain_t *_d, int _cflags)
 done:
 	if(public_ids && public_ids->s)
 		pkg_free(public_ids);
+	if(public_ids_display)
+		pkg_free(public_ids_display);
 	if(service_routes && service_routes->s)
 		pkg_free(service_routes);
 	return 1;
@@ -713,6 +719,8 @@ done:
 error:
 	if(public_ids && public_ids->s)
 		pkg_free(public_ids);
+	if(public_ids_display)
+		pkg_free(public_ids_display);
 	if(service_routes && service_routes->s)
 		pkg_free(service_routes);
 	return -1;

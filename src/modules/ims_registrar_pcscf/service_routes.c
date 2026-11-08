@@ -48,6 +48,7 @@ extern int ignore_contact_rxport_check;
 extern int ignore_contact_rxproto_check;
 extern int trust_bottom_via;
 static str *asserted_identity;
+static str *asserted_display_name;
 static str *registration_contact;
 
 /*!
@@ -405,6 +406,7 @@ tryagain:
 	}
 
 	asserted_identity = NULL;
+	asserted_display_name = NULL;
 	registration_contact = NULL;
 	if(current_ct) {
 		LM_DBG("Trying to set asserted identity field");
@@ -416,6 +418,10 @@ tryagain:
 				LM_DBG("Found default contact user so setting asserted "
 					   "identity");
 				asserted_identity = &p->public_identity;
+				// with the display name stored at registration (3GPP TS
+				// 24.229 5.2.6.3.3)
+				asserted_display_name =
+						p->display_name.len > 0 ? &p->display_name : NULL;
 			}
 			p = p->next;
 		}
@@ -794,6 +800,20 @@ str *get_asserted_identity(struct sip_msg *_m)
 		return NULL;
 	} else
 		return asserted_identity;
+}
+
+/**
+ * Get the display name of the current asserted identity, as received in
+ * P-Associated-URI (a quoted-string keeps its quotes), NULL if it has none
+ */
+str *get_asserted_display_name(struct sip_msg *_m)
+{
+	if(_m->id != current_msg_id) {
+		LM_ERR("Unable to get asserted display name: Please call "
+			   "is_registered first!\n");
+		return NULL;
+	} else
+		return asserted_display_name;
 }
 
 

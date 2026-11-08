@@ -48,6 +48,7 @@ int is_registered(struct sip_msg *_m, udomain_t *_d);
 /**
  * Get the current asserted identity for the user
  */
+str *get_asserted_display_name(struct sip_msg *_m);
 str *get_asserted_identity(struct sip_msg *_m);
 
 /**
