@@ -312,9 +312,10 @@ static unsigned char ascii2gsm7bit_ext_codes[256] = {
 static int ascii_to_gsm(str sms, char *output_buffer, int buffer_size,
 		int *output_text_size, unsigned char paddingBits)
 {
-	// Check if output buffer is big enough.
+	// Check if output buffer is big enough (at least one septet per byte;
+	// checked again below with the real number of septets)
 	if((sms.len * 7 + 7) / 8 > buffer_size)
-		return 0;
+		return -1;
 
 	int output_buffer_length = 0;
 	int carry_on_bits = 0;
@@ -342,7 +343,13 @@ static int ascii_to_gsm(str sms, char *output_buffer, int buffer_size,
 
 	*output_text_size = out_size;
 
-	if(paddingBits) {
+	// an extension character takes two septets: check the real size
+	if((paddingBits + out_size * 7 + 7) / 8 > buffer_size) {
+		pkg_free(tmp_buff);
+		return -1;
+	}
+
+	if(paddingBits && out_size > 0) {
 		carry_on_bits = 7 - paddingBits;
 		output_buffer[output_buffer_length++] = tmp_buff[0]
 												<< (7 - carry_on_bits);
@@ -371,142 +378,45 @@ static int ascii_to_gsm(str sms, char *output_buffer, int buffer_size,
 }
 
 // Decode 7bit encoded message by splitting 8 bit encoded buffer into 7 bit ASCII characters.
-int gsm_to_ascii(char *buffer, int buffer_length, str sms, const int fill_bits)
+int gsm_to_ascii(char *sbuffer, int buffer_length, str sms, const int fill_bits)
 {
+	// Unpack sms.len septets (3GPP TS 23.038 6.1.2.1.1): septet k starts at
+	// bit fill_bits + 7 * k of the buffer, least significant bit first. One
+	// output byte per character; never more than sms.len septets and never
+	// past buffer_length octets.
+	const unsigned char *buffer = (const unsigned char *)sbuffer;
 	int output_text_length = 0;
+	int is_escape = 0;
+	int k, bit, octet, shift;
+	unsigned int value;
+	unsigned char symbol;
 
-	if(!buffer_length || (fill_bits && buffer_length < 2))
+	if(fill_bits < 0 || fill_bits > 6 || buffer_length <= 0)
 		return 0;
 
-	// How many bits we have carried from the next octet. This number can be positive or negative:
-	// positive: We have carried n bits FROM the next octet.
-	// negative: We have to carry n bits TO the next octet.
-	// 0: Nothing carried. Default value!
-	int carry_on_bits = 0;
-
-	// Used to iterate over buffer. Declared here, because if there are fill_bits it have to be incremented
-	int i = 0, num_bytes = 0;
-
-	unsigned char symbol;
-	unsigned char isEscape = 0;
-
-	// First remove the fill bits, if any
-	if(fill_bits) {
-		// We need 7 bits in the first octet, so if there is only 1 fill bit, we don't have to
-		// carry from the next octet.
-
-		// cmask stands for carry mask or how many bits to carry from the 2nd octet
-		unsigned char cmask = (1 << (fill_bits - 1)) - 1;
-
-		symbol =
-				((buffer[0] >> fill_bits)
-						| // remove the fill bits from the first octet
-						(buffer[1]
-								& cmask << (8
-											- fill_bits)) // mask the required number of bits
-						//and shift them accordingly
-						)
-				& BITMASK_7BITS; // mask just 7 bits from the first octet
-
-		if(symbol != GSM7BIT_ESCAPE) {
-			sms.s[output_text_length++] = gsm7bit_codes[symbol];
-		} else {
-			isEscape = 1;
-		}
-
-		carry_on_bits = fill_bits - 1;
-		i++;
-		num_bytes++;
-	}
-
-
-	for(; i < buffer_length; ++i) {
-		if(carry_on_bits > 0) {
-			if(i + 1 >= buffer_length)
+	for(k = 0; k < sms.len; k++) {
+		bit = fill_bits + 7 * k;
+		octet = bit / 8;
+		shift = bit % 8;
+		if(octet >= buffer_length)
+			break;
+		value = buffer[octet] >> shift;
+		if(shift > 1) {
+			// the septet continues in the next octet
+			if(octet + 1 >= buffer_length)
 				break;
-			unsigned char cmask = (1 << (carry_on_bits - 1))
-								  - 1; //mask for the rightmost carry_on_bits
-									   //E.g. carry_on_bits=3 -> _ _ _ _ _ X X X
-			symbol =
-					((buffer[i] >> carry_on_bits)
-							| //shift right to remove carried bits
-							(buffer[i + 1] & cmask)
-									<< (8 - carry_on_bits) // carry from the next
-							// and shift accordingly
-							)
-					& BITMASK_7BITS; // mask just 7 bits from the first octet
-		} else if(carry_on_bits < 0) {
-			carry_on_bits =
-					carry_on_bits
-					* -1; //make carry_on_bits positive for the bitwise ops
-			unsigned char cmask =
-					((1 << carry_on_bits) - 1)
-					<< (8 - carry_on_bits); //mask for the leftmost carry_on_bits.
-			//E.g. carry_on_bits=3 -> X X X _ _ _ _ _
-			symbol =
-					((buffer[i] << carry_on_bits)
-							| //shift left to make space for the carried bits
-							(buffer[i - 1] & cmask)
-									>> (8 - carry_on_bits) // get the bits from the previous octet
-							// and shift accordingly
-							)
-					& BITMASK_7BITS; // mask just 7 bits from the first octet
-
-			carry_on_bits = carry_on_bits * -1; //return the original value
-		} else {								// carry_on_bits == 0
-			symbol = buffer[i] & BITMASK_7BITS;
+			value |= (unsigned int)buffer[octet + 1] << (8 - shift);
 		}
+		symbol = value & BITMASK_7BITS;
 
-		if(isEscape) {
-			isEscape = 0;
-
+		if(is_escape) {
+			is_escape = 0;
 			sms.s[output_text_length++] = gsm7bit_ext_codes[symbol];
+		} else if(symbol == GSM7BIT_ESCAPE) {
+			is_escape = 1;
 		} else {
-			if(symbol != GSM7BIT_ESCAPE) {
-				sms.s[output_text_length++] = gsm7bit_codes[symbol];
-			} else {
-				isEscape = 1;
-			}
+			sms.s[output_text_length++] = gsm7bit_codes[symbol];
 		}
-
-		//Update carry_on bits. It is always decremented, because we iterate over octests but read just septets
-		carry_on_bits--;
-
-		if(++num_bytes == sms.len)
-			break;
-
-		if(carry_on_bits == -8) {
-			carry_on_bits = -1;
-			symbol = buffer[i] & BITMASK_7BITS;
-
-			if(isEscape) {
-				isEscape = 0;
-
-				sms.s[output_text_length++] = gsm7bit_ext_codes[symbol];
-			} else {
-				if(symbol != GSM7BIT_ESCAPE) {
-					sms.s[output_text_length++] = gsm7bit_codes[symbol];
-				} else {
-					isEscape = 1;
-				}
-			}
-
-			if(++num_bytes == sms.len)
-				break;
-		}
-
-		if(carry_on_bits > 0 && (i + 2 >= buffer_length)) {
-			//carry_on_bits is positive, which means thah we have to borrow from the next octet on next iteration
-			//However i + 2 >= buffer_length so there is no next octet. This is error.
-			break;
-		}
-	}
-
-	if(num_bytes < sms.len) { // Add last remainder.
-		symbol = ((unsigned char)buffer[i - 1] >> (8 - carry_on_bits))
-				 & BITMASK_7BITS;
-
-		sms.s[output_text_length++] = gsm7bit_codes[symbol];
 	}
 
 	return output_text_length;
@@ -1197,8 +1107,10 @@ int decode_3gpp_sms(struct sip_msg *msg)
 						if(_smsops_rp_data->pdu.coding == 0x00) {
 							// We don't care about the extra used bytes here.
 							_smsops_rp_data->pdu.payload.sm.len = len;
+							// only the octets of the septets announced in
+							// TP-UDL (checked above), not the rest of the body
 							_smsops_rp_data->pdu.payload.sm.len = gsm_to_ascii(
-									&body.s[p], body.len - p,
+									&body.s[p], (fill_bits + len * 7 + 7) / 8,
 									_smsops_rp_data->pdu.payload.sm, fill_bits);
 						} else {
 							// Length is worst-case 2 * len (UCS2 is 2 Bytes, UTF8 is worst-case 4 Bytes)
@@ -1441,8 +1353,17 @@ int pv_sms_body(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 				&_smsops_sms_body.s[_smsops_sms_body.len],
 				buffer_size - _smsops_sms_body.len, &actual_text_size,
 				paddingBits);
+		if(i < 0) {
+			LM_ERR("Error encoding SMS in GSM 7 bit format!\n");
+			return -1;
+		}
 		_smsops_sms_body.len += i;
-		_smsops_sms_body.s[smstext_len_pos] = actual_text_size + udh_len;
+		// TP-UDL counts septets for GSM 7 bit (TS 23.040 9.2.3.16): the UDH
+		// with its fill bits takes (udh_len * 8 + 6) / 7 of them (7 for the
+		// 6 octets of a concatenation UDH), not udh_len - one short, the
+		// receiver lost the last character of every part
+		_smsops_sms_body.s[smstext_len_pos] =
+				actual_text_size + (udh_len * 8 + 6) / 7;
 	} else {
 		// Coding: ucs2
 		int ucs2len = utf8_to_ucs2(&_smsops_rp_send_data->pdu.payload.sm.s[0],
