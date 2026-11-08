@@ -560,6 +560,46 @@ int save_pending(struct sip_msg *_m, udomain_t *_d)
 			ci_.num_service_routes = 0;
 			ul.update_pcontact(_d, &ci_, pcontact);
 		}
+
+		// A UE that registers again from the client port of a contact it
+		// still has - after a restart, keeping its protected ports (TS 33.203
+		// 7.4) - answers the 401 that another contact got (the one of its
+		// unprotected REGISTER) from this one. Store the copy of the offer
+		// here as well, the way a new contact gets it above, so that the 200
+		// promotes the offer over this contact and retires the tunnel it was
+		// registered over; without it the contact keeps the old tunnel and
+		// requests and replies to the UE go out over it. An offer this contact
+		// holds itself, installed, is kept.
+		if(sec_params && sec_params->type == SECURITY_IPSEC
+				&& sec_params->data.ipsec && sec_params->data.ipsec->spi_pc
+				&& sec_params->data.ipsec->spi_ps
+				&& sec_params->data.ipsec->port_pc
+				&& sec_params->data.ipsec->port_ps) {
+			security_t *old_temp = pcontact->security_temp;
+			ipsec_t *ot = (old_temp && old_temp->type == SECURITY_IPSEC)
+								  ? old_temp->data.ipsec
+								  : NULL;
+			if(old_temp == NULL
+					|| (ot
+							&& !(ot->spi_pc && ot->spi_ps && ot->port_pc
+									&& ot->port_ps))) {
+				LM_DBG("contact [%.*s] exists: storing the offer it registers "
+					   "over (spi_pc %u, spi_ps %u)\n",
+						pcontact->aor.len, pcontact->aor.s,
+						sec_params->data.ipsec->spi_pc,
+						sec_params->data.ipsec->spi_ps);
+				if(ul.update_temp_security(
+						   _d, sec_params->type, sec_params, pcontact)
+						!= 0) {
+					LM_ERR("Error updating temp security\n");
+				} else {
+					sec_params_stored = 1;
+					if(old_temp) {
+						free_security_t(old_temp);
+					}
+				}
+			}
+		}
 	}
 
 	ul.unlock_udomain(_d, &ci.via_host, ci.via_port, ci.via_prot);
