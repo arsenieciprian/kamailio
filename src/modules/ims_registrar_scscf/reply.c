@@ -617,8 +617,12 @@ static inline unsigned int calc_associateduri_buf_len(ims_subscription *s)
 	for(i = 0; i < s->service_profiles_cnt; i++)
 		for(j = 0; j < s->service_profiles[i].public_identities_cnt; j++) {
 			id = &(s->service_profiles[i].public_identities[j]);
-			if(!id->barring)
+			if(!id->barring) {
 				len += 4 + id->public_identity.len; /*4 is for ">, <""*/
+				// "display name" and a space, " and \ escaped
+				if(id->display_name.len)
+					len += 3 + 2 * id->display_name.len;
+			}
 		}
 
 	if(len)
@@ -634,7 +638,7 @@ static inline unsigned int calc_associateduri_buf_len(ims_subscription *s)
 int build_p_associated_uri(ims_subscription *s)
 {
 	char *p;
-	int i, j, cnt = 0;
+	int i, j, k, cnt = 0;
 	ims_public_identity *id;
 
 	LM_DBG("Building P-Associated-URI\n");
@@ -670,12 +674,29 @@ int build_p_associated_uri(ims_subscription *s)
 		for(j = 0; j < s->service_profiles[i].public_identities_cnt; j++) {
 			id = &(s->service_profiles[i].public_identities[j]);
 			if(!id->barring) {
-				if(cnt == 0)
-					*p++ = '<';
-				else {
-					memcpy(p, ">, <", 4);
-					p += 4;
+				if(cnt != 0) {
+					memcpy(p, ">, ", 3);
+					p += 3;
 				}
+				// the display name the HSS gave for it (3GPP TS 24.229
+				// 5.4.1.2.2F), as a quoted-string (RFC 3261 25.1)
+				if(id->display_name.len) {
+					*p++ = '"';
+					for(k = 0; k < id->display_name.len; k++) {
+						// no control characters in a quoted-string (a
+						// CR or LF would end the header field)
+						if((unsigned char)id->display_name.s[k] < 0x20
+								|| id->display_name.s[k] == 0x7f)
+							continue;
+						if(id->display_name.s[k] == '"'
+								|| id->display_name.s[k] == '\\')
+							*p++ = '\\';
+						*p++ = id->display_name.s[k];
+					}
+					*p++ = '"';
+					*p++ = ' ';
+				}
+				*p++ = '<';
 				memcpy(p, id->public_identity.s, id->public_identity.len);
 				p += id->public_identity.len;
 				cnt++;

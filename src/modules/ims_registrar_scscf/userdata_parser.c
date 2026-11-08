@@ -745,7 +745,9 @@ static int parse_public_identity(
 {
 	xmlNodePtr child;
 	xmlNodePtr grandson;
+	xmlNodePtr ext;
 	xmlChar *x;
+	int len;
 	int return_code = 1;
 
 	for(child = root->children; child; child = child->next)
@@ -810,6 +812,34 @@ static int parse_public_identity(
 
 									xmlFree(x);
 									return_code = 2;
+									break;
+								case 'E':
+								case 'e':
+									// Extension (tPublicIdentityExtension2,
+									// Rel-8): DisplayName, as received
+									for(ext = grandson->children; ext;
+											ext = ext->next) {
+										if(ext->type != XML_ELEMENT_NODE
+												|| strcasecmp((char *)ext->name,
+														"DisplayName")
+												|| pi->display_name.s)
+											continue;
+										x = xmlNodeListGetString(
+												doc, ext->xmlChildrenNode, 1);
+										len = x ? strlen((char *)x) : 0;
+										if(len > 0) {
+											pi->display_name.s =
+													shm_malloc(len);
+											if(pi->display_name.s) {
+												memcpy(pi->display_name.s, x,
+														len);
+												pi->display_name.len = len;
+											} else {
+												SHM_MEM_ERROR;
+											}
+										}
+										xmlFree(x);
+									}
 									break;
 								default:
 									break;
