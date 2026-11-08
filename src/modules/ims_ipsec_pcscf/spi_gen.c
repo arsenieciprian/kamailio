@@ -252,6 +252,39 @@ int release_spi(
 	return 0;
 }
 
+// Release the SPI pair one of whose SPIs is spi, with the ports it was
+// handed out with. The pairs are (spi_cid, spi_cid + 1) from min_spi on.
+// Returns 0 if a pair in use was released, 1 otherwise.
+int release_spi_of(uint32_t spi)
+{
+	spi_node_t *n;
+	uint32_t spi_cid;
+	uint16_t cport, sport;
+
+	if(!spi_data || spi < spi_data->min_spi || spi >= spi_data->max_spi) {
+		return 1;
+	}
+	spi_cid = spi - (spi - spi_data->min_spi) % 2;
+
+	if(pthread_mutex_lock(&spi_data->spis_mut) != 0) {
+		return 1;
+	}
+
+	n = spi_find(
+			&spi_data->used_spis[spi_cid % MAX_HASH_SPI], spi_cid, spi_cid + 1);
+	if(n) {
+		cport = n->cport;
+		sport = n->sport;
+		spi_remove(&spi_data->used_spis[spi_cid % MAX_HASH_SPI], spi_cid,
+				spi_cid + 1);
+		spi_add(&spi_data->free_spi, spi_cid, spi_cid + 1, cport, sport);
+	}
+
+	pthread_mutex_unlock(&spi_data->spis_mut);
+
+	return n ? 0 : 1;
+}
+
 int spi_set_owner(uint32_t spi_cid, uint32_t spi_sid, uint16_t owner)
 {
 	spi_node_t *n;

@@ -880,8 +880,12 @@ static int delete_unused_sa_cb(const struct nlmsghdr *nlh, void *data)
 	delmsg_buf->offset += new_delmsg->nlmsg_len;
 
 	// NOTE: Release the Proxy SPIs and Ports only here. Do not release the same SPIs and ports in delete unsused policy callback.
-	// Release SPIs
-	release_spi(ipsec.spi_pc, ipsec.spi_ps, ipsec.port_pc, ipsec.port_ps);
+	// Release the pair of the SA being deleted: the SPI of an SA towards the
+	// P-CSCF is one of the pair handed out for that tunnel (ipsec holds the
+	// values of the last contact compared above, which is still in use)
+	if(ip_addr_cmp(&sa_dst_addr, proxy_ip_addr)) {
+		release_spi_of(sa_spi);
+	}
 	return MNL_CB_OK;
 }
 

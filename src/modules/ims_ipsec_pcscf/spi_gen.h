@@ -48,6 +48,8 @@ int release_spi(
 		uint32_t spi_cid, uint32_t spi_sid, uint16_t cport, uint16_t sport);
 // The received port of the contact an acquired pair was offered to, kept
 // until the pair is released (0 for none)
+// release the pair one of whose SPIs is spi (0 if one was in use)
+int release_spi_of(uint32_t spi);
 int spi_set_owner(uint32_t spi_cid, uint32_t spi_sid, uint16_t owner);
 uint16_t spi_get_owner(uint32_t spi_cid, uint32_t spi_sid);
 
