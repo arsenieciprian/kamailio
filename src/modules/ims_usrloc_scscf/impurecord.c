@@ -1099,31 +1099,6 @@ int compare_subscription(ims_subscription *new, ims_subscription *orig)
 	return 0;
 }
 
-
-/*
- * Whether two subscriptions carry the same service data (identities,
- * service profiles, iFC, ...): their binary encodings, as stored in the
- * database, are equal. 1 = same, 0 = different (or not comparable).
- */
-static int subscription_data_equal(ims_subscription *a, ims_subscription *b)
-{
-	bin_data x, y;
-	int same = 0;
-
-	if(!bin_alloc(&x, 256))
-		return 0;
-	if(!bin_alloc(&y, 256)) {
-		bin_free(&x);
-		return 0;
-	}
-	if(bin_encode_ims_subscription(&x, a) && bin_encode_ims_subscription(&y, b)
-			&& x.len == y.len && memcmp(x.s, y.s, x.len) == 0)
-		same = 1;
-	bin_free(&x);
-	bin_free(&y);
-	return same;
-}
-
 /**
  * @brief update an existing impurecord. if one doesn't exist it will be created. assumes the domain is locked
  * @param _d
@@ -1173,37 +1148,17 @@ int update_impurecord(struct udomain *_d, str *public_identity,
 					subs_ptr); //we reference coz we are using it - will be unreferenced later.
 			add_subscription_unsafe(subs_ptr);
 			unlock_subscription_slot(subs_ptr->sl);
-		} else if(compare_subscription(subs_ptr, subscription) != 0
-				  && subscription_data_equal(subs_ptr, subscription)) {
-			// the same data as the subscription we have: keep that one (the
-			// reference get_subscription() took is dropped at the end)
-			subs_ptr = subscription;
 		} else {
-			// The HSS sent different data for this IMPI - a changed service
-			// profile (iFC, ...) or implicit set. It replaces the one in the
-			// hash: the IMPUs still pointing to the old one move over as the
-			// same SAR updates each of them (below), the old one is freed
-			// with its last reference. Comparing only the public identities
-			// kept the old profile for as long as the IMPI had any record
-			// (with db_mode 1 across restarts too).
-			LM_DBG("subscription data changed for IMPI [%.*s]: replacing\n",
-					subs_ptr->private_identity.len,
-					subs_ptr->private_identity.s);
-			{
-				int sl = core_hash(
-						&subs_ptr->private_identity, 0, subs_hash_size);
-				lock_subscription_slot(sl);
-				if(subscription->sl >= 0) {
-					subs_slot_rem(
-							&ims_subscription_list->slot[subscription->sl],
-							subscription);
-					subscription->sl = -1;
-				}
-				ref_subscription_unsafe(subs_ptr); // unreferenced at the end
+			//TODO: we may want to do a deep comparison of the subscription and update....
+			if(compare_subscription(subs_ptr, subscription) != 0) {
+				subs_ptr = subscription;
+			} else {
+				// Treat it as a new Subscription - it's not the same as the previous one
+				ref_subscription_unsafe(
+						subs_ptr); //we reference coz we are using it - will be unreferenced later.
 				add_subscription_unsafe(subs_ptr);
-				unlock_subscription_slot(sl);
+				unlock_subscription_slot(subs_ptr->sl);
 			}
-			unref_subscription(subscription); // taken by get_subscription()
 		}
 		lock_subscription(subs_ptr);
 		subscription_locked = 1;
