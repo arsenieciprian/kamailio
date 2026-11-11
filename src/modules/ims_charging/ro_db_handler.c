@@ -604,10 +604,8 @@ int update_ro_dbinfo_unsafe(struct ro_session *ro_session)
 
 
 		LM_DBG("Inserting ro_session into database\n");
-		/* the id column is assigned by the database (auto-increment /
-		 * serial): leave it out, an explicit NULL is rejected by PostgreSQL */
-		if((ro_dbf.insert(ro_db_handle, insert_keys + 1, values + 1,
-				   RO_SESSION_TABLE_COL_NUM - 1))
+		if((ro_dbf.insert(
+				   ro_db_handle, insert_keys, values, RO_SESSION_TABLE_COL_NUM))
 				!= 0) {
 			LM_ERR("could not add new Ro session into DB.... continuing\n");
 			goto error;
